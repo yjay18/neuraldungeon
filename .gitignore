@@ -1,0 +1,22 @@
+# Claude / AI
+/.claude/
+context.md
+PLAN.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Testing
+/.pytest_cache/
+
+# Environment
+.env
+.venv/

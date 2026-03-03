@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neural-dungeon"
+version = "0.1.0"
+description = "A top-down bullet hell roguelike where the dungeon IS a neural network"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0.0",
+    "pygame-ce>=2.4.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+neural-dungeon = "neural_dungeon.main:main"
+
+[tool.setuptools.packages.find]
+include = ["neural_dungeon*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
