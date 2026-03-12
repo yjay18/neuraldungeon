@@ -4,6 +4,7 @@ import torch
 from neural_dungeon.config import (
     ROOMS_PER_FLOOR, ROOM_TYPE_COMBAT, ROOM_TYPE_ELITE,
     ROOM_TYPE_DEAD, ROOM_TYPE_BOSS, ROOM_TYPE_START,
+    BOSS_FLOORS,
 )
 from neural_dungeon.world.room import Room
 from neural_dungeon.world.map_graph import FloorMap
@@ -59,6 +60,15 @@ class Floor:
                 room_index=0,
                 floor_index=self.floor_index,
                 activation=0.5,
+            ))
+
+        # Append boss room on boss floors
+        if self.floor_index in BOSS_FLOORS:
+            self.rooms.append(Room(
+                room_type=ROOM_TYPE_BOSS,
+                room_index=len(self.rooms),
+                floor_index=self.floor_index,
+                activation=1.0,
             ))
 
         self.current_room_index = 0

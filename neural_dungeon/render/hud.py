@@ -1,4 +1,4 @@
-"""HUD rendering — HP bar, weapon, floor info."""
+"""HUD rendering — HP bar, weapon, floor info, active item."""
 import pygame
 from neural_dungeon.config import SCREEN_WIDTH
 from neural_dungeon.render.colors import hp_color, rgb
@@ -40,6 +40,20 @@ def render_hud(screen, font, font_sm, player, floor_num, room_progress):
         dodge = font_sm.render("DODGE", True, rgb("bright_black"))
     screen.blit(dodge, (240, 35))
 
+    # Active item
+    if player.active_item:
+        from neural_dungeon.entities.items import ACTIVE_ITEMS
+        ainfo = ACTIVE_ITEMS.get(player.active_item, {})
+        aname = ainfo.get("name", player.active_item)
+        if player.active_item_cooldown <= 0:
+            act_color = rgb("bright_green")
+            act_text = f"[F] {aname}"
+        else:
+            act_color = rgb("bright_black")
+            act_text = f"[F] {aname} ({player.active_item_cooldown})"
+        act = font_sm.render(act_text, True, act_color)
+        screen.blit(act, (240, 50))
+
     # Floor + room
     floor_text = font.render(f"Floor {floor_num + 1}", True, rgb("yellow"))
     screen.blit(floor_text, (450, 12))
@@ -47,6 +61,13 @@ def render_hud(screen, font, font_sm, player, floor_num, room_progress):
     if room_progress:
         prog = font_sm.render(room_progress, True, rgb("white"))
         screen.blit(prog, (450, 35))
+
+    # Passive count
+    if player.passive_items:
+        pcount = font_sm.render(
+            f"Passives: {len(player.passive_items)}", True, rgb("bright_cyan"),
+        )
+        screen.blit(pcount, (450, 50))
 
     # Data fragments + kills
     frag = font_sm.render(

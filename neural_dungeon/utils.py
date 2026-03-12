@@ -34,6 +34,87 @@ def circles_collide(
     return distance(x1, y1, x2, y2) < r1 + r2
 
 
+def resolve_tile_collision(old_x, old_y, new_x, new_y, radius, grid,
+                           block_vent=False):
+    """Slide-based tile collision. Returns resolved (x, y).
+
+    Checks 4 cardinal hitbox points against blocking tiles.
+    block_vent=True for enemies (they can't pass vents).
+    """
+    from neural_dungeon.world.room_layouts import Tile
+
+    def _blocked(gx, gy):
+        if gx < 0 or gx >= ROOM_WIDTH or gy < 0 or gy >= ROOM_HEIGHT:
+            return False
+        tile = grid[gy][gx]
+        if tile in (Tile.WALL, Tile.COVER):
+            return True
+        if block_vent and tile == Tile.VENT:
+            return True
+        return False
+
+    def _any_blocked(px, py):
+        """Check 4 cardinal points of hitbox circle."""
+        points = [
+            (int(px + radius), int(py)),
+            (int(px - radius), int(py)),
+            (int(px), int(py + radius)),
+            (int(px), int(py - radius)),
+        ]
+        for gx, gy in points:
+            if _blocked(gx, gy):
+                return True
+        return False
+
+    # Try full move
+    if not _any_blocked(new_x, new_y):
+        return new_x, new_y
+
+    # Try x-only
+    if not _any_blocked(new_x, old_y):
+        return new_x, old_y
+
+    # Try y-only
+    if not _any_blocked(old_x, new_y):
+        return old_x, new_y
+
+    # Fully blocked
+    return old_x, old_y
+
+
+def lead_shot_direction(
+    shooter_x: float, shooter_y: float,
+    target_x: float, target_y: float,
+    target_vx: float, target_vy: float,
+    target_speed: float,
+    bullet_speed: float,
+    accuracy: float = 1.0,
+) -> tuple[float, float]:
+    """Aim ahead of a moving target. Returns (dx, dy) normalized.
+
+    accuracy 0.0 = aim at current pos, 1.0 = perfect prediction.
+    """
+    base_dx, base_dy = direction_to(shooter_x, shooter_y, target_x, target_y)
+    if accuracy < 0.01 or bullet_speed < 0.01:
+        return base_dx, base_dy
+
+    dist = distance(shooter_x, shooter_y, target_x, target_y)
+    if dist < 0.1:
+        return base_dx, base_dy
+
+    # Predict where target will be when bullet arrives
+    travel_ticks = min(dist / bullet_speed, 30)
+    pred_x = target_x + target_vx * target_speed * travel_ticks
+    pred_y = target_y + target_vy * target_speed * travel_ticks
+
+    lead_dx, lead_dy = direction_to(shooter_x, shooter_y, pred_x, pred_y)
+
+    # Lerp between dumb aim and lead aim
+    final_dx = base_dx * (1 - accuracy) + lead_dx * accuracy
+    final_dy = base_dy * (1 - accuracy) + lead_dy * accuracy
+    return normalize(final_dx, final_dy)
+
+
 def astar(
     start: tuple[int, int],
     goal: tuple[int, int],

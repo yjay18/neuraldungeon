@@ -28,9 +28,42 @@ from neural_dungeon.config import (
     RELU_BULLET_SPEED, RELU_BULLET_DAMAGE,
     RELU_ACTIVATION_THRESHOLD, RELU_CHAR,
     ROOM_WIDTH, ROOM_HEIGHT, COLOR_ENEMY_DEFAULT,
+    EVOLUTION_LEAD_ACCURACY, EVOLUTION_SPACING_DIST,
 )
-from neural_dungeon.utils import direction_to, distance, clamp, astar
+from neural_dungeon.utils import (
+    direction_to, distance, clamp, astar, lead_shot_direction,
+)
 from neural_dungeon.entities.projectiles import Projectile
+
+
+def _get_lead_accuracy(evolution_level: int) -> float:
+    if evolution_level < len(EVOLUTION_LEAD_ACCURACY):
+        return EVOLUTION_LEAD_ACCURACY[evolution_level]
+    return EVOLUTION_LEAD_ACCURACY[-1]
+
+
+def _get_spacing_dist(evolution_level: int) -> float:
+    if evolution_level < len(EVOLUTION_SPACING_DIST):
+        return EVOLUTION_SPACING_DIST[evolution_level]
+    return EVOLUTION_SPACING_DIST[-1]
+
+
+def _apply_spacing(enemy, enemies: list | None, spacing_dist: float):
+    """Push away from nearby allies to avoid clumping."""
+    if not enemies or spacing_dist < 0.1:
+        return
+    push_x, push_y = 0.0, 0.0
+    for other in enemies:
+        if other is enemy or not other.alive:
+            continue
+        d = distance(enemy.x, enemy.y, other.x, other.y)
+        if 0.1 < d < spacing_dist:
+            dx, dy = direction_to(other.x, other.y, enemy.x, enemy.y)
+            strength = (spacing_dist - d) / spacing_dist * 0.1
+            push_x += dx * strength
+            push_y += dy * strength
+    enemy.x += push_x
+    enemy.y += push_y
 
 
 class Enemy:
@@ -43,6 +76,7 @@ class Enemy:
         char: str,
         color: str = COLOR_ENEMY_DEFAULT,
         hitbox_radius: float = 0.5,
+        evolution_level: int = 0,
     ):
         self.x = x
         self.y = y
@@ -56,6 +90,11 @@ class Enemy:
         self.contact_damage = 0
         self.intangible = False
         self.absorbed = False
+        self.blocked_set: set = set()
+        self.evolution_level = evolution_level
+        self.is_boss = False
+        self.boss_name = ""
+        self.frozen_timer = 0
 
     def take_damage(self, amount: int) -> int:
         if not self.alive or self.intangible:
@@ -68,8 +107,13 @@ class Enemy:
         return actual
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         """Returns list of new projectiles to spawn."""
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
+            return []
         return []
 
     def _clamp_to_room(self) -> None:
@@ -77,25 +121,45 @@ class Enemy:
         self.x = clamp(self.x, margin, ROOM_WIDTH - margin)
         self.y = clamp(self.y, margin, ROOM_HEIGHT - margin)
 
+    def _aim_at_player(self, player_x, player_y,
+                       player_vx=0.0, player_vy=0.0,
+                       player_speed=0.0, bullet_speed=0.5):
+        """Aim with lead prediction based on evolution_level."""
+        accuracy = _get_lead_accuracy(self.evolution_level)
+        if accuracy < 0.01:
+            return direction_to(self.x, self.y, player_x, player_y)
+        return lead_shot_direction(
+            self.x, self.y, player_x, player_y,
+            player_vx, player_vy, player_speed,
+            bullet_speed, accuracy,
+        )
+
 
 class Perceptron(Enemy):
     """Fires single aimed bullet. Circle-strafes at medium range."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or PERCEPTRON_HP,
             speed=PERCEPTRON_SPEED,
             char=PERCEPTRON_CHAR,
             color="red",
+            evolution_level=evolution_level,
         )
         self.shoot_cooldown = random.randint(0, PERCEPTRON_SHOOT_COOLDOWN)
         self.wander_angle = random.uniform(0, 2 * math.pi)
         self.wander_timer = random.randint(30, 90)
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
+            return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
             return []
 
         bullets: list[Projectile] = []
@@ -117,11 +181,17 @@ class Perceptron(Enemy):
             self.x += math.cos(self.wander_angle) * self.speed * 0.5
             self.y += math.sin(self.wander_angle) * self.speed * 0.5
 
+        # Anti-clump spacing (floor 5+)
+        _apply_spacing(self, enemies, _get_spacing_dist(self.evolution_level))
+
         self._clamp_to_room()
 
         self.shoot_cooldown -= 1
         if self.shoot_cooldown <= 0 and dist < 30:
-            dx, dy = direction_to(self.x, self.y, player_x, player_y)
+            dx, dy = self._aim_at_player(
+                player_x, player_y, player_vx, player_vy,
+                player_speed, PERCEPTRON_BULLET_SPEED,
+            )
             bullet = Projectile(
                 x=self.x, y=self.y,
                 dx=dx, dy=dy,
@@ -141,7 +211,8 @@ class Perceptron(Enemy):
 class Token(Enemy):
     """Walks toward player, explodes on contact. Spawns in groups."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or TOKEN_HP,
@@ -149,14 +220,30 @@ class Token(Enemy):
             char=TOKEN_CHAR,
             color="yellow",
             hitbox_radius=0.4,
+            evolution_level=evolution_level,
         )
         self.contact_damage = TOKEN_DAMAGE
+        self.zigzag_phase = random.uniform(0, 2 * math.pi)
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
             return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
+            return []
         dx, dy = direction_to(self.x, self.y, player_x, player_y)
+
+        # Zigzag approach (floor 6+)
+        if self.evolution_level >= 6:
+            self.zigzag_phase += 0.15
+            perp_x, perp_y = -dy, dx  # perpendicular
+            zigzag = math.sin(self.zigzag_phase) * 0.4
+            dx += perp_x * zigzag
+            dy += perp_y * zigzag
+
         self.x += dx * self.speed
         self.y += dy * self.speed
         self._clamp_to_room()
@@ -166,19 +253,23 @@ class Token(Enemy):
 class BitShifter(Enemy):
     """Teleports to random position every few seconds, fires aimed shot."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or BIT_SHIFTER_HP,
             speed=BIT_SHIFTER_SPEED,
             char=BIT_SHIFTER_CHAR,
             color="bright_magenta",
+            evolution_level=evolution_level,
         )
         self.teleport_timer = BIT_SHIFTER_TELEPORT_CD
         self.shoot_cooldown = BIT_SHIFTER_SHOOT_COOLDOWN
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
             return []
 
@@ -187,8 +278,21 @@ class BitShifter(Enemy):
         self.teleport_timer -= 1
         if self.teleport_timer <= 0:
             margin = 3.0
-            self.x = random.uniform(margin, ROOM_WIDTH - margin)
-            self.y = random.uniform(margin, ROOM_HEIGHT - margin)
+            # Flanking teleport (floor 6+): teleport to player's side
+            if self.evolution_level >= 6:
+                angle = random.uniform(0, 2 * math.pi)
+                flank_dist = random.uniform(6.0, 12.0)
+                self.x = clamp(
+                    player_x + math.cos(angle) * flank_dist,
+                    margin, ROOM_WIDTH - margin,
+                )
+                self.y = clamp(
+                    player_y + math.sin(angle) * flank_dist,
+                    margin, ROOM_HEIGHT - margin,
+                )
+            else:
+                self.x = random.uniform(margin, ROOM_WIDTH - margin)
+                self.y = random.uniform(margin, ROOM_HEIGHT - margin)
             self.teleport_timer = BIT_SHIFTER_TELEPORT_CD + random.randint(-10, 10)
             self.shoot_cooldown = BIT_SHIFTER_SHOOT_COOLDOWN
 
@@ -201,7 +305,10 @@ class BitShifter(Enemy):
         self.shoot_cooldown -= 1
         dist = distance(self.x, self.y, player_x, player_y)
         if self.shoot_cooldown <= 0 and dist < 35:
-            dx, dy = direction_to(self.x, self.y, player_x, player_y)
+            dx, dy = self._aim_at_player(
+                player_x, player_y, player_vx, player_vy,
+                player_speed, BIT_SHIFTER_BULLET_SPEED,
+            )
             bullet = Projectile(
                 x=self.x, y=self.y,
                 dx=dx, dy=dy,
@@ -221,19 +328,24 @@ class BitShifter(Enemy):
 class Convolver(Enemy):
     """Fires 3x3 grid of bullets periodically. Moves slowly."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or CONVOLVER_HP,
             speed=CONVOLVER_SPEED,
             char=CONVOLVER_CHAR,
             color="bright_blue",
+            evolution_level=evolution_level,
         )
         self.shoot_cooldown = CONVOLVER_SHOOT_COOLDOWN
         self.wander_angle = random.uniform(0, 2 * math.pi)
+        self.burst_rotation = 0.0
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
             return []
 
@@ -248,6 +360,10 @@ class Convolver(Enemy):
 
         self.shoot_cooldown -= 1
         if self.shoot_cooldown <= 0:
+            # Rotating burst (floor 7+)
+            if self.evolution_level >= 7:
+                self.burst_rotation += 0.3
+
             # Fire 8 bullets in all directions
             directions = [
                 (-1, -1), (0, -1), (1, -1),
@@ -259,6 +375,14 @@ class Convolver(Enemy):
                 if mag < 0.01:
                     continue
                 ndx, ndy = ddx / mag, ddy / mag
+                # Apply rotation offset on floor 7+
+                if self.evolution_level >= 7 and self.burst_rotation > 0:
+                    cos_r = math.cos(self.burst_rotation)
+                    sin_r = math.sin(self.burst_rotation)
+                    ndx, ndy = (
+                        ndx * cos_r - ndy * sin_r,
+                        ndx * sin_r + ndy * cos_r,
+                    )
                 bullet = Projectile(
                     x=self.x, y=self.y,
                     dx=ndx, dy=ndy,
@@ -278,23 +402,31 @@ class Convolver(Enemy):
 class DropoutPhantom(Enemy):
     """30% chance to be intangible each tick. Flickers visually."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or DROPOUT_HP,
             speed=DROPOUT_SPEED,
             char=DROPOUT_CHAR,
             color="bright_white",
+            evolution_level=evolution_level,
         )
         self.shoot_cooldown = random.randint(0, DROPOUT_SHOOT_COOLDOWN)
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
             return []
 
-        # Roll intangibility each tick
-        self.intangible = random.random() < DROPOUT_INTANGIBLE_CHANCE
+        # Intangibility rises below half HP on floor 9+
+        intangible_chance = DROPOUT_INTANGIBLE_CHANCE
+        if self.evolution_level >= 9 and self.hp < self.max_hp * 0.5:
+            intangible_chance = min(intangible_chance + 0.2, 0.6)
+
+        self.intangible = random.random() < intangible_chance
         self.color = "bright_black" if self.intangible else "bright_white"
 
         bullets: list[Projectile] = []
@@ -307,11 +439,16 @@ class DropoutPhantom(Enemy):
         elif dist < 6:
             self.x -= dx * self.speed
             self.y -= dy * self.speed
+
+        _apply_spacing(self, enemies, _get_spacing_dist(self.evolution_level))
         self._clamp_to_room()
 
         self.shoot_cooldown -= 1
         if self.shoot_cooldown <= 0 and dist < 30:
-            dx, dy = direction_to(self.x, self.y, player_x, player_y)
+            dx, dy = self._aim_at_player(
+                player_x, player_y, player_vx, player_vy,
+                player_speed, DROPOUT_BULLET_SPEED,
+            )
             bullet = Projectile(
                 x=self.x, y=self.y,
                 dx=dx, dy=dy,
@@ -331,7 +468,8 @@ class DropoutPhantom(Enemy):
 class Pooler(Enemy):
     """Absorbs dead enemies to gain HP. Contact damage."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or POOLER_HP,
@@ -339,12 +477,15 @@ class Pooler(Enemy):
             char=POOLER_CHAR,
             color="bright_yellow",
             hitbox_radius=0.6,
+            evolution_level=evolution_level,
         )
         self.contact_damage = POOLER_DAMAGE
         self.absorbed_count = 0
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
             return []
 
@@ -387,19 +528,26 @@ class Pooler(Enemy):
 class AttentionHead(Enemy):
     """Fires slow homing projectiles that track the player."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or ATTENTION_HP,
             speed=ATTENTION_SPEED,
             char=ATTENTION_CHAR,
             color="bright_cyan",
+            evolution_level=evolution_level,
         )
         self.shoot_cooldown = random.randint(0, ATTENTION_SHOOT_COOLDOWN)
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
+            return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
             return []
 
         bullets: list[Projectile] = []
@@ -415,6 +563,11 @@ class AttentionHead(Enemy):
             self.y -= dy * self.speed
         self._clamp_to_room()
 
+        # Homing turn rate increases on floor 8+
+        turn_rate = ATTENTION_TURN_RATE
+        if self.evolution_level >= 8:
+            turn_rate = 0.07
+
         self.shoot_cooldown -= 1
         if self.shoot_cooldown <= 0 and dist < 35:
             dx, dy = direction_to(self.x, self.y, player_x, player_y)
@@ -428,7 +581,7 @@ class AttentionHead(Enemy):
                 color="bright_cyan",
                 max_range=50.0,
                 homing=True,
-                turn_rate=ATTENTION_TURN_RATE,
+                turn_rate=turn_rate,
             )
             bullets.append(bullet)
             self.shoot_cooldown = ATTENTION_SHOOT_COOLDOWN + random.randint(-5, 15)
@@ -439,13 +592,15 @@ class AttentionHead(Enemy):
 class GradientGhost(Enemy):
     """Uses A* pathfinding. Leaves damaging trail behind."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or GRADIENT_GHOST_HP,
             speed=GRADIENT_GHOST_SPEED,
             char=GRADIENT_GHOST_CHAR,
             color="magenta",
+            evolution_level=evolution_level,
         )
         self.path: list[tuple[int, int]] = []
         self.path_index = 0
@@ -453,11 +608,19 @@ class GradientGhost(Enemy):
         self.trail_timer = GRADIENT_GHOST_TRAIL_CD
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
+            return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
             return []
 
         bullets: list[Projectile] = []
+
+        # Repath faster on floor 7+ (30→20 ticks)
+        repath_interval = 20 if self.evolution_level >= 7 else 30
 
         # Recalculate path periodically
         self.repath_timer -= 1
@@ -472,9 +635,9 @@ class GradientGhost(Enemy):
                 max(0, min(goal[0], ROOM_WIDTH - 1)),
                 max(0, min(goal[1], ROOM_HEIGHT - 1)),
             )
-            self.path = astar(start, goal, set())
+            self.path = astar(start, goal, self.blocked_set)
             self.path_index = 0
-            self.repath_timer = 30
+            self.repath_timer = repath_interval
 
         # Follow path
         if self.path and self.path_index < len(self.path):
@@ -514,23 +677,33 @@ class GradientGhost(Enemy):
 class OverfittingMimic(Enemy):
     """Records player movement, then replays it. Shoots while replaying."""
 
-    def __init__(self, x: float, y: float, hp: int | None = None):
+    def __init__(self, x: float, y: float, hp: int | None = None,
+                 evolution_level: int = 0):
         super().__init__(
             x=x, y=y,
             hp=hp or MIMIC_HP,
             speed=0.0,
             char=MIMIC_CHAR,
             color="green",
+            evolution_level=evolution_level,
         )
         self.recording = True
         self.record_buffer: list[tuple[float, float]] = []
-        self.record_timer = MIMIC_RECORD_TICKS
+        # Records faster on floor 8+ (90→60 ticks)
+        record_ticks = 60 if evolution_level >= 8 else MIMIC_RECORD_TICKS
+        self.record_timer = record_ticks
+        self.record_duration = record_ticks
         self.replay_index = 0
         self.shoot_cooldown = MIMIC_SHOOT_COOLDOWN
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
+            return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
             return []
 
         bullets: list[Projectile] = []
@@ -557,14 +730,17 @@ class OverfittingMimic(Enemy):
                 # Done replaying, record again
                 self.recording = True
                 self.record_buffer.clear()
-                self.record_timer = MIMIC_RECORD_TICKS
+                self.record_timer = self.record_duration
                 self.replay_index = 0
 
             # Shoot while replaying
             self.shoot_cooldown -= 1
             dist = distance(self.x, self.y, player_x, player_y)
             if self.shoot_cooldown <= 0 and dist < 30:
-                dx, dy = direction_to(self.x, self.y, player_x, player_y)
+                dx, dy = self._aim_at_player(
+                    player_x, player_y, player_vx, player_vy,
+                    player_speed, MIMIC_BULLET_SPEED,
+                )
                 bullet = Projectile(
                     x=self.x, y=self.y,
                     dx=dx, dy=dy,
@@ -586,7 +762,7 @@ class ReLUGuardian(Enemy):
     """Behavior depends on room activation. Active if >= threshold."""
 
     def __init__(self, x: float, y: float, activation: float = 0.5,
-                 hp: int | None = None):
+                 hp: int | None = None, evolution_level: int = 0):
         is_active = activation >= RELU_ACTIVATION_THRESHOLD
         super().__init__(
             x=x, y=y,
@@ -594,6 +770,7 @@ class ReLUGuardian(Enemy):
             speed=RELU_SPEED_ACTIVE if is_active else RELU_SPEED_DORMANT,
             char=RELU_CHAR,
             color="bright_green" if is_active else "bright_black",
+            evolution_level=evolution_level,
         )
         self.activation = activation
         self.is_active = is_active
@@ -601,8 +778,13 @@ class ReLUGuardian(Enemy):
         self.shoot_cooldown = random.randint(0, shoot_cd)
 
     def update(self, player_x: float, player_y: float,
-               enemies: list | None = None) -> list[Projectile]:
+               enemies: list | None = None,
+               player_vx: float = 0.0, player_vy: float = 0.0,
+               player_speed: float = 0.0) -> list[Projectile]:
         if not self.alive:
+            return []
+        if self.frozen_timer > 0:
+            self.frozen_timer -= 1
             return []
 
         bullets: list[Projectile] = []
@@ -623,7 +805,10 @@ class ReLUGuardian(Enemy):
         shoot_cd = RELU_SHOOT_CD_ACTIVE if self.is_active else RELU_SHOOT_CD_DORMANT
         self.shoot_cooldown -= 1
         if self.shoot_cooldown <= 0 and dist < 30:
-            dx, dy = direction_to(self.x, self.y, player_x, player_y)
+            dx, dy = self._aim_at_player(
+                player_x, player_y, player_vx, player_vy,
+                player_speed, RELU_BULLET_SPEED,
+            )
             bullet = Projectile(
                 x=self.x, y=self.y,
                 dx=dx, dy=dy,
@@ -677,18 +862,29 @@ def spawn_enemies_for_room(
         ENEMIES_PER_ROOM_BASE, ENEMIES_PER_ROOM_SCALE,
         ROOM_TYPE_COMBAT, ROOM_TYPE_ELITE, ROOM_TYPE_BOSS,
         ROOM_TYPE_DEAD, ROOM_TYPE_SHOP, ROOM_TYPE_START,
+        EVOLUTION_STAT_SCALE,
     )
 
     if room_type in (ROOM_TYPE_DEAD, ROOM_TYPE_SHOP, ROOM_TYPE_START):
         return []
 
-    count = int(ENEMIES_PER_ROOM_BASE + floor_index * ENEMIES_PER_ROOM_SCALE)
+    # Enemy count: gentle cap for higher floors
+    if floor_index <= 4:
+        count = int(ENEMIES_PER_ROOM_BASE + floor_index * ENEMIES_PER_ROOM_SCALE)
+    else:
+        count = min(9 + (floor_index - 4), 12)
+
     if room_type == ROOM_TYPE_ELITE:
         count = int(count * 1.5)
     elif room_type == ROOM_TYPE_BOSS:
         count = max(1, count // 2)
 
     pool = FLOOR_ENEMY_POOL.get(floor_index, FLOOR_ENEMY_POOL[4])
+
+    # Stat scaling from evolution
+    stat_scale = 1.0
+    if floor_index < len(EVOLUTION_STAT_SCALE):
+        stat_scale = EVOLUTION_STAT_SCALE[floor_index]
 
     enemies: list[Enemy] = []
     margin = 3.0
@@ -703,9 +899,22 @@ def spawn_enemies_for_room(
         enemy_key = random.choice(pool)
 
         if enemy_key == "relu_guardian":
-            enemies.append(ReLUGuardian(ex, ey, activation=activation))
+            enemy = ReLUGuardian(
+                ex, ey, activation=activation,
+                evolution_level=floor_index,
+            )
         else:
             cls = ENEMY_CLASSES[enemy_key]
-            enemies.append(cls(ex, ey))
+            enemy = cls(ex, ey, evolution_level=floor_index)
+
+        # Apply stat scaling (HP and damage scale fully, speed at half rate)
+        if stat_scale != 1.0:
+            enemy.hp = int(enemy.hp * stat_scale)
+            enemy.max_hp = enemy.hp
+            enemy.contact_damage = int(enemy.contact_damage * stat_scale)
+            speed_scale = 1.0 + (stat_scale - 1.0) * 0.5
+            enemy.speed *= speed_scale
+
+        enemies.append(enemy)
 
     return enemies

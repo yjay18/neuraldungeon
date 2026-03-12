@@ -44,6 +44,4 @@ python build_exe.py
   - `adaptive/` — AI adaptation system (Phase 6)
   - `persistence/` — Save system (Phase 7)
 
-## Development Phases
-
-See `context.md` for the full checklist and design decisions.
+IN DEVELOPMENT

@@ -114,12 +114,25 @@ RELU_BULLET_DAMAGE = 12
 RELU_ACTIVATION_THRESHOLD = 0.5
 RELU_CHAR = "▷"
 
+# -- Door interaction ---------------------------------------------------------
+DOOR_GAME_X = ROOM_WIDTH // 2
+DOOR_GAME_Y = 0
+DOOR_INTERACT_RANGE = 3.0
+
 # -- Boss defaults ------------------------------------------------------------
 CLASSIFIER_HP = 300
 AUTOENCODER_HP = 400
 GAN_HP = 250
 TRANSFORMER_HP = 500
 LOSS_FUNCTION_HP = 600
+
+BOSS_FLOORS = {
+    1: "classifier",
+    3: "autoencoder",
+    5: "gan",
+    7: "transformer",
+    9: "loss_function",
+}
 
 # -- Projectiles --------------------------------------------------------------
 BULLET_CHARS = {
@@ -129,9 +142,28 @@ BULLET_CHARS = {
     "spread": "∘",
 }
 
+# -- Room Layout --------------------------------------------------------------
+COVER_HP = 30
+PIT_DAMAGE_PER_SECOND = 5
+SLOW_MULTIPLIER = 0.5
+
+# -- Evolution (per-floor AI progression) -------------------------------------
+EVOLUTION_STAT_SCALE = [
+    1.0, 1.0, 1.0, 1.05, 1.05,
+    1.10, 1.10, 1.15, 1.20, 1.25,
+]
+EVOLUTION_LEAD_ACCURACY = [
+    0.0, 0.0, 0.0, 0.3, 0.5,
+    0.5, 0.55, 0.6, 0.65, 0.7,
+]
+EVOLUTION_SPACING_DIST = [
+    0.0, 0.0, 0.0, 0.0, 0.0,
+    3.0, 3.0, 3.5, 3.5, 4.0,
+]
+
 # -- Rooms & Floors -----------------------------------------------------------
 ROOMS_PER_FLOOR = 5
-TOTAL_FLOORS = 5
+TOTAL_FLOORS = 10
 ENEMIES_PER_ROOM_BASE = 3
 ENEMIES_PER_ROOM_SCALE = 1.5
 
@@ -200,6 +232,13 @@ ACTIVATION_COLORS = {
 
 # -- Weapons ------------------------------------------------------------------
 WEAPON_GRADIENT_BEAM = "gradient_beam"
+WEAPON_SCATTER_SHOT = "scatter_shot"
+WEAPON_PULSE_CANNON = "pulse_cannon"
+WEAPON_RAPID_FIRE = "rapid_fire"
+WEAPON_PIERCING_RAY = "piercing_ray"
+WEAPON_HOMING_BURST = "homing_burst"
+WEAPON_SNIPER = "sniper"
+WEAPON_SHOTGUN_BLAST = "shotgun_blast"
 
 WEAPONS = {
     WEAPON_GRADIENT_BEAM: {
@@ -212,8 +251,114 @@ WEAPONS = {
         "spread": 0.0,
         "projectiles": 1,
         "range": 40,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_SCATTER_SHOT: {
+        "name": "Scatter Shot",
+        "damage": 5,
+        "fire_rate": 5,
+        "bullet_speed": 0.9,
+        "bullet_char": "∘",
+        "bullet_color": "bright_yellow",
+        "spread": 15.0,
+        "projectiles": 3,
+        "range": 35,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_PULSE_CANNON: {
+        "name": "Pulse Cannon",
+        "damage": 20,
+        "fire_rate": 10,
+        "bullet_speed": 0.7,
+        "bullet_char": "●",
+        "bullet_color": "bright_magenta",
+        "spread": 0.0,
+        "projectiles": 1,
+        "range": 30,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_RAPID_FIRE: {
+        "name": "Rapid Fire",
+        "damage": 4,
+        "fire_rate": 2,
+        "bullet_speed": 1.2,
+        "bullet_char": "·",
+        "bullet_color": "bright_green",
+        "spread": 0.0,
+        "projectiles": 1,
+        "range": 35,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_PIERCING_RAY: {
+        "name": "Piercing Ray",
+        "damage": 6,
+        "fire_rate": 5,
+        "bullet_speed": 1.0,
+        "bullet_char": "─",
+        "bullet_color": "bright_white",
+        "spread": 0.0,
+        "projectiles": 1,
+        "range": 45,
+        "piercing": True,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_HOMING_BURST: {
+        "name": "Homing Burst",
+        "damage": 5,
+        "fire_rate": 8,
+        "bullet_speed": 0.5,
+        "bullet_char": "◦",
+        "bullet_color": "bright_cyan",
+        "spread": 0.0,
+        "projectiles": 1,
+        "range": 50,
+        "piercing": False,
+        "homing": True,
+        "turn_rate": 0.04,
+    },
+    WEAPON_SNIPER: {
+        "name": "Sniper",
+        "damage": 15,
+        "fire_rate": 12,
+        "bullet_speed": 1.5,
+        "bullet_char": "—",
+        "bullet_color": "white",
+        "spread": 0.0,
+        "projectiles": 1,
+        "range": 60,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
+    },
+    WEAPON_SHOTGUN_BLAST: {
+        "name": "Shotgun Blast",
+        "damage": 4,
+        "fire_rate": 7,
+        "bullet_speed": 0.8,
+        "bullet_char": "∘",
+        "bullet_color": "bright_red",
+        "spread": 30.0,
+        "projectiles": 5,
+        "range": 15,
+        "piercing": False,
+        "homing": False,
+        "turn_rate": 0.0,
     },
 }
+
+# -- Item costs ---------------------------------------------------------------
+WEAPON_COST = 50
+PASSIVE_COST = 30
+ACTIVE_COST = 40
 
 # -- Data Fragments -----------------------------------------------------------
 FRAGMENTS_PER_ENEMY = 5

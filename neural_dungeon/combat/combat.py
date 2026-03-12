@@ -10,8 +10,11 @@ def check_player_vs_enemy_bullets(
     proj_mgr: ProjectileManager,
 ) -> int:
     """Returns total damage dealt to player this tick."""
+    import random
     if player.invulnerable or not player.alive:
         return 0
+
+    has_dropout = player.has_passive("dropout_layer")
 
     total_damage = 0
     for bullet in proj_mgr.get_enemy_bullets():
@@ -21,6 +24,10 @@ def check_player_vs_enemy_bullets(
             player.x, player.y, player.hitbox_radius,
             bullet.x, bullet.y, bullet.hitbox_radius,
         ):
+            # Dropout Layer: 10% chance enemy bullet misses
+            if has_dropout and random.random() < 0.10:
+                bullet.kill()
+                continue
             dmg = player.take_damage(bullet.damage)
             total_damage += dmg
             bullet.kill()
@@ -68,7 +75,8 @@ def check_player_vs_enemy_contact(
             player.x, player.y, player.hitbox_radius,
             enemy.x, enemy.y, enemy.hitbox_radius,
         ):
-            dmg = player.take_damage(enemy.contact_damage)
+            dmg = player.take_contact_damage(enemy.contact_damage)
             total += dmg
-            enemy.alive = False  # Token-type enemies die on contact
+            if enemy.contact_damage > 0 and not enemy.is_boss:
+                enemy.alive = False  # Token-type enemies die on contact
     return total
