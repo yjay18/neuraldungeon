@@ -11,6 +11,9 @@ from neural_dungeon.config import (
     ROOM_TYPE_ELITE, ROOM_TYPE_BOSS, ROOM_TYPE_SHOP, ROOM_TYPE_WEIGHT,
     NETWORK_LAYERS, PIT_DAMAGE_PER_SECOND, SLOW_MULTIPLIER,
     DOOR_GAME_X, DOOR_GAME_Y, DOOR_INTERACT_RANGE,
+    FLASHLIGHT_RANGE, FLASHLIGHT_HALF_ANGLE_DEG,
+    ENEMY_FOV_RANGE, ENEMY_FOV_HALF_ANGLE_DEG,
+    ENEMY_AWARE_DURATION, ENEMY_SENSE_RANGE,
 )
 from neural_dungeon.entities.player import Player
 from neural_dungeon.entities.projectiles import Projectile, ProjectileManager
@@ -24,8 +27,25 @@ from neural_dungeon.combat.combat import (
 )
 from neural_dungeon.render.renderer import Renderer
 from neural_dungeon.render.map_screen import render_map_screen
+from neural_dungeon.render.particles import ParticleSystem
+from neural_dungeon.render.colors import rgb
 from neural_dungeon.network.dungeon_net import DungeonNet
 from neural_dungeon.network.activation import compute_floor_activations
+
+
+def _point_in_cone(px, py, cone_x, cone_y, cone_angle,
+                   cone_half_angle_deg, cone_range):
+    """Check if point (px,py) is inside a cone."""
+    dx = px - cone_x
+    dy = py - cone_y
+    dist = math.sqrt(dx * dx + dy * dy)
+    if dist > cone_range:
+        return False
+    if dist < 0.01:
+        return True
+    angle_to_point = math.atan2(dy, dx)
+    diff = (angle_to_point - cone_angle + math.pi) % (2 * math.pi) - math.pi
+    return abs(diff) <= math.radians(cone_half_angle_deg)
 
 
 class Game:
@@ -56,6 +76,18 @@ class Game:
 
         # Firewall (invulnerability) active item timer
         self.firewall_timer = 0
+
+        # Visual effects
+        self.particles = ParticleSystem()
+        self.ambient_timer = 0
+
+        # Controls overlay / flashlight hint state
+        self.controls_dismissed = False
+        self.flashlight_hint_dismissed = False
+        self.flashlight_hint_seen = False
+
+        # Pending item drop (boss drops — player chooses to equip or skip)
+        self.pending_drop = None  # dict or None
 
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
@@ -99,6 +131,12 @@ class Game:
         self.current_floor_index = 0
         self.message = ""
         self.firewall_timer = 0
+        self.particles = ParticleSystem()
+        self.ambient_timer = 0
+        self.controls_dismissed = False
+        self.flashlight_hint_dismissed = False
+        self.flashlight_hint_seen = False
+        self.pending_drop = None
 
         self.dungeon_net = DungeonNet()
         activations = compute_floor_activations(self.dungeon_net)
@@ -209,6 +247,28 @@ class Game:
 
         room = self.current_room
 
+        # Pending boss drop — [1] equip, [2] skip
+        if self.pending_drop is not None:
+            if key == pygame.K_1:
+                drop = self.pending_drop
+                p = self.player
+                if drop["type"] == "weapon":
+                    p.weapon = drop["id"]
+                elif drop["type"] == "passive":
+                    p.add_passive(drop["id"])
+                elif drop["type"] == "active":
+                    p.active_item = drop["id"]
+                    p.active_item_cooldown = 0
+                self.message = f"Equipped {drop['name']}!"
+                self.message_timer = 60
+                self.pending_drop = None
+                return
+            elif key == pygame.K_2:
+                self.message = "Skipped drop."
+                self.message_timer = 60
+                self.pending_drop = None
+                return
+
         if key == pygame.K_SPACE:
             self.player.start_dodge()
 
@@ -221,6 +281,12 @@ class Game:
                 )
                 if dist <= DOOR_INTERACT_RANGE:
                     self._advance()
+
+        # Flashlight toggle
+        if key == pygame.K_t:
+            if self.player:
+                self.player.flashlight_on = not self.player.flashlight_on
+                self.flashlight_hint_dismissed = True
 
         # Active item (F key)
         if key == pygame.K_f:
@@ -327,6 +393,10 @@ class Game:
         if keys[pygame.K_d]:
             mx = 1.0
         p.set_move(mx, my)
+
+        # Dismiss controls overlay on first movement
+        if (mx != 0.0 or my != 0.0) and not self.controls_dismissed:
+            self.controls_dismissed = True
 
         # Mouse aiming — convert mouse pixel pos to game coords
         raw_mx, raw_my = pygame.mouse.get_pos()
@@ -468,8 +538,52 @@ class Game:
         if p.can_shoot():
             self._spawn_player_bullets()
 
+        is_dark = room.is_dark
+
         for enemy in room.living_enemies:
             enemy.blocked_set = room.blocked_set
+
+            # Dark room awareness check
+            if is_dark:
+                can_see = False
+                edist = distance(enemy.x, enemy.y, p.x, p.y)
+
+                # 1. Close range sense
+                if edist <= ENEMY_SENSE_RANGE:
+                    can_see = True
+                # 2. Enemy FOV cone check
+                elif _point_in_cone(p.x, p.y, enemy.x, enemy.y,
+                                    enemy.facing_angle,
+                                    ENEMY_FOV_HALF_ANGLE_DEG,
+                                    ENEMY_FOV_RANGE):
+                    can_see = True
+                # 3. Player flashlight illuminates enemy
+                elif p.flashlight_on:
+                    aim_angle = math.atan2(p.aim_dy, p.aim_dx)
+                    if _point_in_cone(enemy.x, enemy.y, p.x, p.y,
+                                      aim_angle,
+                                      FLASHLIGHT_HALF_ANGLE_DEG,
+                                      FLASHLIGHT_RANGE):
+                        can_see = True
+
+                if can_see:
+                    enemy.aware_timer = ENEMY_AWARE_DURATION
+                elif enemy.aware_timer > 0:
+                    enemy.aware_timer -= 1
+
+                # Update facing angle
+                if enemy.aware_timer > 0:
+                    enemy.facing_angle = math.atan2(
+                        p.y - enemy.y, p.x - enemy.x,
+                    )
+                # else keep current facing (set during wander below)
+
+            else:
+                # Non-dark rooms: always aware, face player
+                enemy.aware_timer = ENEMY_AWARE_DURATION
+                enemy.facing_angle = math.atan2(
+                    p.y - enemy.y, p.x - enemy.x,
+                )
 
             # SLOW tile check
             old_speed = enemy.speed
@@ -481,11 +595,27 @@ class Game:
                     enemy.speed *= SLOW_MULTIPLIER
 
             old_ex, old_ey = enemy.x, enemy.y
-            new_bullets = enemy.update(
-                p.x, p.y, room.enemies,
-                player_vx=p.move_dx, player_vy=p.move_dy,
-                player_speed=p.speed,
-            )
+
+            # Dark room: unaware enemies wander instead of tracking
+            if is_dark and enemy.aware_timer <= 0:
+                if not hasattr(enemy, '_wander_angle'):
+                    enemy._wander_angle = random.uniform(0, math.tau)
+                    enemy._wander_cd = 0
+                enemy._wander_cd -= 1
+                if enemy._wander_cd <= 0:
+                    enemy._wander_angle = random.uniform(0, math.tau)
+                    enemy._wander_cd = random.randint(60, 150)
+                enemy.x += math.cos(enemy._wander_angle) * enemy.speed * 0.3
+                enemy.y += math.sin(enemy._wander_angle) * enemy.speed * 0.3
+                enemy.facing_angle = enemy._wander_angle
+                enemy._clamp_to_room()
+                new_bullets = []
+            else:
+                new_bullets = enemy.update(
+                    p.x, p.y, room.enemies,
+                    player_vx=p.move_dx, player_vy=p.move_dy,
+                    player_speed=p.speed,
+                )
             for b in new_bullets:
                 self.proj_mgr.spawn(b)
 
@@ -512,11 +642,17 @@ class Game:
         for gx, gy, dmg in cover_hits:
             room.damage_cover(gx, gy, dmg)
 
+        prev_hp = p.hp
         check_player_vs_enemy_bullets(p, self.proj_mgr)
         killed = check_player_bullets_vs_enemies(
             room.living_enemies, self.proj_mgr,
         )
         check_player_vs_enemy_contact(p, room.enemies)
+
+        # Player damage particles + screen shake
+        if p.hp < prev_hp:
+            self.particles.emit_player_damage(p.x, p.y)
+            self.renderer.effects.trigger_shake(4)
 
         for enemy in killed:
             p.enemies_killed += 1
@@ -528,11 +664,19 @@ class Game:
             else:
                 p.data_fragments += FRAGMENTS_PER_ENEMY
 
+            # Death explosion particles
+            color = rgb(enemy.color)
+            count = 25 if enemy.is_boss else 14
+            self.particles.emit_explosion(enemy.x, enemy.y, color, count)
+            if enemy.is_boss:
+                self.renderer.effects.trigger_shake(10)
+
         just_cleared = room.update_clear_state()
         if just_cleared:
             p.rooms_cleared += 1
             self.message = f"{room.display_name} cleared!"
             self.message_timer = 60
+            self.particles.emit_room_clear(ROOM_WIDTH, ROOM_HEIGHT)
 
             # Error correction passive: heal 5 on clear
             if p.has_passive("error_correction"):
@@ -543,23 +687,43 @@ class Game:
                 room.room_type, p.weapon, p.passive_items, p.active_item,
             )
             if drop:
-                if drop["type"] == "passive":
+                if room.room_type == ROOM_TYPE_BOSS:
+                    # Boss drops: offer choice to equip or skip
+                    self.pending_drop = drop
+                    self.message = f"Dropped: {drop['name']}! [1] Equip  [2] Skip"
+                    self.message_timer = 0  # stays until resolved
+                elif drop["type"] == "passive":
                     p.add_passive(drop["id"])
-                    self.message += f" Got {drop['name']}!"
-                elif drop["type"] == "weapon":
-                    p.weapon = drop["id"]
                     self.message += f" Got {drop['name']}!"
                 elif drop["type"] == "active":
                     p.active_item = drop["id"]
                     p.active_item_cooldown = 0
                     self.message += f" Got {drop['name']}!"
 
+        # Dodge trail particles
+        if p.dodging:
+            self.particles.emit_dodge_trail(p.x, p.y)
+
+        # Bullet trail particles (every other tick to limit count)
+        if self.tick_count % 2 == 0:
+            for b in self.proj_mgr.projectiles:
+                if b.alive and b.owner == "player":
+                    self.particles.emit_trail(b.x, b.y, rgb(b.color))
+
+        # Ambient floating data particles
+        self.ambient_timer += 1
+        if self.ambient_timer >= 8:
+            self.ambient_timer = 0
+            self.particles.emit_ambient(ROOM_WIDTH, ROOM_HEIGHT)
+
+        self.particles.update()
+
         if not p.alive:
             self.state = STATE_GAME_OVER
 
         if self.message_timer > 0:
             self.message_timer -= 1
-            if self.message_timer <= 0:
+            if self.message_timer <= 0 and self.pending_drop is None:
                 self.message = ""
 
     def _render(self):
@@ -603,6 +767,23 @@ class Game:
             )
         else:
             room = self.current_room
+            is_dark = room.is_dark if room else False
+
+            # Controls overlay: show in first room until player moves
+            show_controls = (
+                not self.controls_dismissed
+                and self.current_floor_index == 0
+                and floor is not None
+                and floor.current_room_index == 0
+            )
+
+            # Flashlight hint: show in first dark room until toggle
+            show_flashlight_hint = False
+            if is_dark and not self.flashlight_hint_dismissed:
+                if not self.flashlight_hint_seen:
+                    self.flashlight_hint_seen = True
+                show_flashlight_hint = True
+
             self.renderer.render_frame(
                 player=p or Player(0, 0),
                 room=room,
@@ -611,7 +792,14 @@ class Game:
                 room_progress=floor.progress if floor else "",
                 game_state=STATE_PLAYING,
                 message=self.message,
+                particles=self.particles,
+                is_dark=is_dark,
+                show_controls=show_controls,
+                show_flashlight_hint=show_flashlight_hint,
             )
+
+        # Screen shake offset
+        shake_x, shake_y = self.renderer.effects.get_shake_offset()
 
         # Scale logical surface to display
         if self.fullscreen:
@@ -624,10 +812,13 @@ class Game:
                 self.logical_surface, (ow, oh),
             )
             self.screen.blit(
-                scaled, ((sw - ow) // 2, (sh - oh) // 2),
+                scaled,
+                ((sw - ow) // 2 + shake_x, (sh - oh) // 2 + shake_y),
             )
         else:
-            self.screen.blit(self.logical_surface, (0, 0))
+            self.screen.blit(
+                self.logical_surface, (shake_x, shake_y),
+            )
 
         pygame.display.flip()
 

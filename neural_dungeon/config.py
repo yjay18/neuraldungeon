@@ -385,3 +385,12 @@ STATE_GAME_OVER = "game_over"
 STATE_VICTORY = "victory"
 STATE_ROOM_CLEAR = "room_clear"
 STATE_FLOOR_TRANSITION = "floor_transition"
+
+# -- Flashlight / Dark rooms --------------------------------------------------
+DARK_ROOM_CHANCE = 35  # percent of combat/elite rooms that are dark
+FLASHLIGHT_RANGE = 18.0  # game units
+FLASHLIGHT_HALF_ANGLE_DEG = 30.0
+ENEMY_FOV_RANGE = 15.0
+ENEMY_FOV_HALF_ANGLE_DEG = 45.0
+ENEMY_AWARE_DURATION = 90  # ticks (3 seconds at 30 TPS)
+ENEMY_SENSE_RANGE = 4.0  # close range — can sense without line of sight

@@ -162,28 +162,36 @@ def roll_item_drop(room_type, player_weapon, player_passives, player_active):
     elif room_type == "elite":
         if random.random() > 0.40:
             return None
-        if random.random() < 0.5:
+        # Passives or actives only — weapons are shop-exclusive
+        if random.random() < 0.6:
             available = [k for k in PASSIVE_ITEMS if k not in player_passives]
             if available:
                 key = random.choice(available)
                 return {"type": "passive", "id": key,
                         "name": PASSIVE_ITEMS[key]["name"]}
-        available_w = [w for w in SHOP_WEAPONS if w != player_weapon]
-        if available_w:
-            wkey = random.choice(available_w)
-            from neural_dungeon.config import WEAPONS
-            return {"type": "weapon", "id": wkey,
-                    "name": WEAPONS[wkey]["name"]}
+        available_a = [k for k in ACTIVE_ITEMS if k != player_active]
+        if available_a:
+            akey = random.choice(available_a)
+            return {"type": "active", "id": akey,
+                    "name": ACTIVE_ITEMS[akey]["name"]}
         return None
 
     elif room_type == "boss":
-        if random.random() < 0.5:
+        # Boss guaranteed drop — weapons, passives, or actives
+        roll = random.random()
+        if roll < 0.35:
             available_w = [w for w in SHOP_WEAPONS if w != player_weapon]
             if available_w:
                 wkey = random.choice(available_w)
                 from neural_dungeon.config import WEAPONS
                 return {"type": "weapon", "id": wkey,
                         "name": WEAPONS[wkey]["name"]}
+        if roll < 0.65:
+            available = [k for k in PASSIVE_ITEMS if k not in player_passives]
+            if available:
+                key = random.choice(available)
+                return {"type": "passive", "id": key,
+                        "name": PASSIVE_ITEMS[key]["name"]}
         available_a = [k for k in ACTIVE_ITEMS if k != player_active]
         if available_a:
             akey = random.choice(available_a)

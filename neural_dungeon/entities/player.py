@@ -46,6 +46,8 @@ class Player:
         self.damage_bonus = 0.0
         self.speed_bonus = 0.0
 
+        self.flashlight_on = True
+
         self.enemies_killed = 0
         self.damage_dealt = 0
         self.damage_taken = 0

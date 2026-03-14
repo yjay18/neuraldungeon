@@ -95,6 +95,8 @@ class Enemy:
         self.is_boss = False
         self.boss_name = ""
         self.frozen_timer = 0
+        self.aware_timer = 0
+        self.facing_angle = 0.0
 
     def take_damage(self, amount: int) -> int:
         if not self.alive or self.intangible:

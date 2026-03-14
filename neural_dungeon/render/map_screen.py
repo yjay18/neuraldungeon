@@ -63,11 +63,23 @@ def render_map_screen(screen, floor_map, floor_num, tick=0):
 
     screen.fill(BG_COLOR)
 
-    # Title
-    title = font_big.render(
-        f"LAYER {floor_num + 1} — NEURAL MAP",
-        True, rgb("bright_cyan"),
-    )
+    # Animated background — subtle data streams
+    t = tick * 0.015
+    for i in range(12):
+        x = int(i * SCREEN_WIDTH / 12) + 20
+        for j in range(8):
+            offset = (t * 40 + i * 50 + j * 90) % SCREEN_HEIGHT
+            y = int(offset)
+            a = int(8 + 5 * math.sin(t + i + j * 0.4))
+            char = chr(0x30 + ((i * 3 + j * 7 + int(t)) % 10))
+            surf = font_sm.render(char, True, (0, a, a + 3))
+            screen.blit(surf, (x, y))
+
+    # Title with shadow
+    title_text = f"LAYER {floor_num + 1} — NEURAL MAP"
+    shadow = font_big.render(title_text, True, glow(rgb("bright_cyan"), 0.25))
+    title = font_big.render(title_text, True, rgb("bright_cyan"))
+    screen.blit(shadow, ((SCREEN_WIDTH - title.get_width()) // 2 + 2, 27))
     screen.blit(title, ((SCREEN_WIDTH - title.get_width()) // 2, 25))
 
     # Map bounds
@@ -252,3 +264,23 @@ def render_map_screen(screen, floor_map, floor_num, tick=0):
         True, (40, 40, 50),
     )
     screen.blit(hint, ((SCREEN_WIDTH - hint.get_width()) // 2, 685))
+
+    # Subtle scanline effect via darkening every 3rd row
+    _draw_map_scanlines(screen)
+
+
+# Pre-built scanline overlay for map screen (module-level cache)
+_map_scanlines = None
+
+
+def _draw_map_scanlines(screen):
+    global _map_scanlines
+    if _map_scanlines is None:
+        _map_scanlines = pygame.Surface(
+            (SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA,
+        )
+        for y in range(0, SCREEN_HEIGHT, 3):
+            pygame.draw.line(
+                _map_scanlines, (0, 0, 0, 20), (0, y), (SCREEN_WIDTH, y),
+            )
+    screen.blit(_map_scanlines, (0, 0))

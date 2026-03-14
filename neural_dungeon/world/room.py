@@ -1,6 +1,6 @@
 """Room types, contents, activation properties."""
 from neural_dungeon.config import (
-    ROOM_WIDTH, ROOM_HEIGHT, COVER_HP,
+    ROOM_WIDTH, ROOM_HEIGHT, COVER_HP, DARK_ROOM_CHANCE,
     ROOM_TYPE_COMBAT, ROOM_TYPE_ELITE, ROOM_TYPE_DEAD,
     ROOM_TYPE_SHOP, ROOM_TYPE_WEIGHT, ROOM_TYPE_BOSS, ROOM_TYPE_START,
 )
@@ -192,6 +192,16 @@ class Room:
             ROOM_TYPE_START: "▶",
         }
         return icons.get(self.room_type, "?")
+
+    @property
+    def is_dark(self) -> bool:
+        """Deterministic dark room check — only combat/elite/boss rooms."""
+        if self.room_type in (
+            ROOM_TYPE_DEAD, ROOM_TYPE_SHOP, ROOM_TYPE_WEIGHT, ROOM_TYPE_START,
+        ):
+            return False
+        seed = hash((self.floor_index, self.room_index, "dark"))
+        return (seed % 100) < DARK_ROOM_CHANCE
 
     @property
     def display_name(self) -> str:
