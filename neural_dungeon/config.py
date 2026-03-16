@@ -385,6 +385,8 @@ STATE_GAME_OVER = "game_over"
 STATE_VICTORY = "victory"
 STATE_ROOM_CLEAR = "room_clear"
 STATE_FLOOR_TRANSITION = "floor_transition"
+STATE_LEVEL_SELECT = "level_select"
+STATE_COLONY_OVERWORLD = "colony_overworld"
 
 # -- Flashlight / Dark rooms --------------------------------------------------
 DARK_ROOM_CHANCE = 35  # percent of combat/elite rooms that are dark

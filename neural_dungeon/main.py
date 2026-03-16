@@ -7,6 +7,7 @@ from neural_dungeon.config import (
     ROOM_WIDTH, ROOM_HEIGHT, TOTAL_FLOORS, GAME_TITLE,
     STATE_TITLE, STATE_PLAYING, STATE_GAME_OVER, STATE_VICTORY,
     STATE_FLOOR_TRANSITION, STATE_MAP,
+    STATE_LEVEL_SELECT, STATE_COLONY_OVERWORLD,
     FRAGMENTS_PER_ENEMY, FRAGMENTS_PER_ELITE, FRAGMENTS_PER_BOSS,
     ROOM_TYPE_ELITE, ROOM_TYPE_BOSS, ROOM_TYPE_SHOP, ROOM_TYPE_WEIGHT,
     NETWORK_LAYERS, PIT_DAMAGE_PER_SECOND, SLOW_MULTIPLIER,
@@ -89,6 +90,13 @@ class Game:
         # Pending item drop (boss drops — player chooses to equip or skip)
         self.pending_drop = None  # dict or None
 
+        # Level select state
+        self.level_select_cursor = 0  # 0-15: ch1 floors, 16-21: ch2 zones
+        self.level_select_section = 0  # 0=ch1, 1=ch2
+
+        # Colony overworld (lazy-loaded)
+        self.colony = None
+
     def toggle_fullscreen(self):
         self.fullscreen = not self.fullscreen
         if self.fullscreen:
@@ -157,10 +165,14 @@ class Game:
             self._process_events()
             self._process_held_keys()
 
-            self.tick_accumulator += dt
-            while self.tick_accumulator >= self.tick_duration:
-                self._update()
-                self.tick_accumulator -= self.tick_duration
+            # Colony overworld updates at 60fps for smooth movement
+            if self.state == STATE_COLONY_OVERWORLD and self.colony:
+                self.colony.update()
+            else:
+                self.tick_accumulator += dt
+                while self.tick_accumulator >= self.tick_duration:
+                    self._update()
+                    self.tick_accumulator -= self.tick_duration
 
             self._render()
 
@@ -187,9 +199,20 @@ class Game:
 
             if self.state == STATE_TITLE:
                 if key == pygame.K_RETURN:
-                    self.new_game()
+                    self.state = STATE_LEVEL_SELECT
+                    self.level_select_cursor = 0
+                    self.level_select_section = 0
                 elif key == pygame.K_q:
                     self.running = False
+
+            elif self.state == STATE_LEVEL_SELECT:
+                self._handle_level_select_key(key)
+
+            elif self.state == STATE_COLONY_OVERWORLD:
+                if self.colony:
+                    result = self.colony.handle_event(event)
+                    if result == "exit":
+                        self.state = STATE_LEVEL_SELECT
 
             elif self.state == STATE_MAP:
                 self._handle_map_key(key)
@@ -310,6 +333,93 @@ class Game:
         if key == pygame.K_q:
             self.state = STATE_TITLE
 
+    def _handle_level_select_key(self, key):
+        max_ch1 = TOTAL_FLOORS  # 10
+        ch2_zones = 6
+
+        if key == pygame.K_ESCAPE:
+            self.state = STATE_TITLE
+            return
+
+        if key == pygame.K_UP:
+            if self.level_select_section == 0:
+                if self.level_select_cursor > 0:
+                    self.level_select_cursor -= 1
+            else:
+                if self.level_select_cursor > 0:
+                    self.level_select_cursor -= 1
+                else:
+                    self.level_select_section = 0
+                    self.level_select_cursor = max_ch1 - 1
+
+        elif key == pygame.K_DOWN:
+            if self.level_select_section == 0:
+                if self.level_select_cursor < max_ch1 - 1:
+                    self.level_select_cursor += 1
+                else:
+                    self.level_select_section = 1
+                    self.level_select_cursor = 0
+            else:
+                if self.level_select_cursor < ch2_zones - 1:
+                    self.level_select_cursor += 1
+
+        elif key == pygame.K_LEFT:
+            if self.level_select_section == 0:
+                # In ch1, move left within row (5 per row)
+                if self.level_select_cursor > 0:
+                    self.level_select_cursor -= 1
+
+        elif key == pygame.K_RIGHT:
+            if self.level_select_section == 0:
+                if self.level_select_cursor < max_ch1 - 1:
+                    self.level_select_cursor += 1
+
+        elif key == pygame.K_RETURN:
+            if self.level_select_section == 0:
+                # Start Chapter 1 at selected floor
+                self._start_at_floor(self.level_select_cursor)
+            else:
+                if self.level_select_cursor == 0:
+                    # The Lanes — start colony
+                    self._start_colony()
+                else:
+                    # Coming Soon — show message
+                    self.message = "Coming Soon!"
+                    self.message_timer = 60
+
+    def _start_at_floor(self, floor_index):
+        """Start Chapter 1 at a specific floor."""
+        self.player = Player(ROOM_WIDTH / 2, ROOM_HEIGHT - 3)
+        self.proj_mgr = ProjectileManager()
+        self.current_floor_index = floor_index
+        self.message = ""
+        self.firewall_timer = 0
+        self.particles = ParticleSystem()
+        self.ambient_timer = 0
+        self.controls_dismissed = False
+        self.flashlight_hint_dismissed = False
+        self.flashlight_hint_seen = False
+        self.pending_drop = None
+
+        self.dungeon_net = DungeonNet()
+        activations = compute_floor_activations(self.dungeon_net)
+
+        self.floors = []
+        for i in range(TOTAL_FLOORS):
+            layer_idx = i % len(NETWORK_LAYERS)
+            weight_matrix = self.dungeon_net.get_weight_matrix(layer_idx)
+            floor = Floor.from_network(i, activations[layer_idx],
+                                       weight_matrix)
+            self.floors.append(floor)
+
+        self.state = STATE_MAP
+
+    def _start_colony(self):
+        """Enter the colony overworld."""
+        from neural_dungeon.colony.overworld import Overworld
+        self.colony = Overworld()
+        self.state = STATE_COLONY_OVERWORLD
+
     def _use_active_item(self):
         p = self.player
         if not p:
@@ -375,6 +485,12 @@ class Game:
         self.message_timer = 45
 
     def _process_held_keys(self):
+        if self.state == STATE_COLONY_OVERWORLD:
+            if self.colony:
+                keys = pygame.key.get_pressed()
+                self.colony.process_held_keys(keys)
+            return
+
         if self.state != STATE_PLAYING:
             return
         if not self.player or not self.player.alive:
@@ -730,7 +846,12 @@ class Game:
         p = self.player
         floor = self.current_floor
 
-        if self.state == STATE_MAP:
+        if self.state == STATE_LEVEL_SELECT:
+            self._render_level_select()
+        elif self.state == STATE_COLONY_OVERWORLD:
+            if self.colony:
+                self.colony.render(self.logical_surface)
+        elif self.state == STATE_MAP:
             if floor and floor.floor_map:
                 render_map_screen(
                     self.logical_surface, floor.floor_map,
@@ -821,6 +942,107 @@ class Game:
             )
 
         pygame.display.flip()
+
+
+    def _render_level_select(self):
+        """Render the level select menu."""
+        screen = self.logical_surface
+        screen.fill((5, 5, 15))
+        font_title = self.renderer.font_big
+        font_section = self.renderer.font_med
+        font_item = self.renderer.font
+
+        # Title
+        title = font_title.render("THE FUN GAME", True, (0, 255, 255))
+        screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 30))
+
+        # Divider
+        pygame.draw.line(screen, (0, 100, 120),
+                         (100, 90), (SCREEN_WIDTH - 100, 90), 1)
+
+        # Chapter 1
+        ch1 = font_section.render("CHAPTER 1 \u2014 NEURAL DUNGEON", True,
+                                  (0, 200, 200))
+        screen.blit(ch1, (60, 110))
+
+        for i in range(TOTAL_FLOORS):
+            col = i % 5
+            row = i // 5
+            x = 80 + col * 160
+            y = 150 + row * 40
+
+            selected = (self.level_select_section == 0
+                        and self.level_select_cursor == i)
+            color = (255, 255, 255) if selected else (120, 120, 120)
+            prefix = "> " if selected else "  "
+            label = f"{prefix}Floor {i + 1}"
+            text = font_item.render(label, True, color)
+            screen.blit(text, (x, y))
+
+            if selected:
+                pygame.draw.rect(screen, (0, 255, 255),
+                                 (x - 4, y - 2,
+                                  text.get_width() + 8,
+                                  text.get_height() + 4), 1)
+
+        # Chapter 2
+        ch2_y = 260
+        ch2 = font_section.render("CHAPTER 2 \u2014 COLONY CREATURES", True,
+                                  (0, 200, 200))
+        screen.blit(ch2, (60, ch2_y))
+
+        ch2_zones = [
+            ("The Lanes", "(Zone 1)", True),
+            ("The Crossing", "[Coming Soon]", False),
+            ("Green Enclave", "[Coming Soon]", False),
+            ("The Deep Woods", "[Coming Soon]", False),
+            ("Old Town", "[Coming Soon]", False),
+            ("The Facility", "[Coming Soon]", False),
+        ]
+
+        for i, (name, tag, available) in enumerate(ch2_zones):
+            y = ch2_y + 40 + i * 32
+            selected = (self.level_select_section == 1
+                        and self.level_select_cursor == i)
+            if selected:
+                color = (255, 255, 255)
+                prefix = "> "
+            elif available:
+                color = (160, 160, 160)
+                prefix = "  "
+            else:
+                color = (80, 80, 80)
+                prefix = "  "
+
+            label = f"{prefix}{name}"
+            text = font_item.render(label, True, color)
+            screen.blit(text, (80, y))
+
+            tag_color = (100, 200, 100) if available else (80, 80, 80)
+            tag_surf = font_item.render(f"  {tag}", True, tag_color)
+            screen.blit(tag_surf, (80 + text.get_width(), y))
+
+            if selected:
+                total_w = text.get_width() + tag_surf.get_width()
+                pygame.draw.rect(screen, (0, 255, 255),
+                                 (76, y - 2, total_w + 8,
+                                  text.get_height() + 4), 1)
+
+        # Controls hint
+        hint = font_item.render(
+            "[Arrow Keys] Navigate   [Enter] Select   [Esc] Back",
+            True, (60, 60, 80))
+        screen.blit(hint, (SCREEN_WIDTH // 2 - hint.get_width() // 2,
+                           SCREEN_HEIGHT - 40))
+
+        # Coming soon message
+        if self.message and self.message_timer > 0:
+            msg = font_section.render(self.message, True, (255, 200, 50))
+            screen.blit(msg, (SCREEN_WIDTH // 2 - msg.get_width() // 2,
+                              SCREEN_HEIGHT - 80))
+            self.message_timer -= 1
+            if self.message_timer <= 0:
+                self.message = ""
 
 
 def main():
